@@ -1,183 +1,197 @@
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   "httpx",
+#   "pandas",
+#   "seaborn",
+#   "matplotlib",
+#   "scikit-learn",
+# ]
+# ///
+
 import os
 import sys
-import openai
+import httpx
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+from sklearn.ensemble import IsolationForest
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import silhouette_score
-from dotenv import load_dotenv
+from sklearn.impute import SimpleImputer
+import os  # Make sure to import os for environment variable access
 
-# Load environment variables from .env file
-load_dotenv()
+# Constants
+API_URL = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
+API_TOKEN = os.environ.get("AIPROXY_TOKEN")  # Use environment variable for the token
 
-# Retrieve the token directly from the environment variable
-token = os.environ.get("AIPROXY_TOKEN")
-if not token:
-    raise EnvironmentError("AIPROXY_TOKEN not found in environment variables. Please check your .env file.")
-
-# Configure OpenAI with the token and set the correct base URL for AI Proxy
-openai.api_key = token
-openai.api_base = "https://aiproxy.sanand.workers.dev/openai/v1"  # Ensure this is correct per AI Proxy documentation
-
-
-def analyze_csv(filename, output_dir="."):
-    """Load and analyze a CSV file, performing analysis and saving outputs to a specified directory."""
+# Function to read CSV files
+def read_csv_file(filename):
     try:
-        # Load dataset with flexible encoding
-        data = pd.read_csv(filename, encoding='ISO-8859-1')
-        print(f"Dataset loaded successfully: {filename}")
-    except Exception as e:
-        raise ValueError(f"Error loading CSV: {e}")
+        return pd.read_csv(filename, encoding="utf-8")
+    except UnicodeDecodeError:
+        print("Warning: UTF-8 encoding failed. Trying ISO-8859-1 (Latin-1).")
+        return pd.read_csv(filename, encoding="ISO-8859-1")
+
+# Perform data analysis
+def analyze_data(df):
+    # Separate numeric and non-numeric columns
+    numeric_df = df.select_dtypes(include=["number"])
+    non_numeric_df = df.select_dtypes(exclude=["number"])
+    
+    # Handle missing values for numeric columns
+    numeric_imputer = SimpleImputer(strategy='mean')
+    df[numeric_df.columns] = numeric_imputer.fit_transform(numeric_df)
+    
+    # Handle missing values for non-numeric columns
+    non_numeric_imputer = SimpleImputer(strategy='most_frequent')
+    df[non_numeric_df.columns] = non_numeric_imputer.fit_transform(non_numeric_df)
+
+    analysis = {
+        "summary": df.describe(include="all").to_dict(),
+        "missing_values": df.isnull().sum().to_dict(),
+        "correlation": numeric_df.corr().to_dict(),
+        "outliers": detect_outliers(df),
+        "clusters": cluster_analysis(df),
+    }
+    return analysis
+
+# Detect outliers using Isolation Forest
+def detect_outliers(df):
+    numeric_df = df.select_dtypes(include=["number"])
+    if numeric_df.empty:
+        return "No numeric data for outlier detection."
+    clf = IsolationForest(contamination=0.05, random_state=42)
+    outliers = clf.fit_predict(numeric_df)
+    return pd.Series(outliers).value_counts().to_dict()
+
+# Perform clustering analysis
+def cluster_analysis(df):
+    numeric_df = df.select_dtypes(include=["number"])
+    if numeric_df.shape[0] > 1 and numeric_df.shape[1] > 1:
+        scaler = StandardScaler()
+        scaled_data = scaler.fit_transform(numeric_df.dropna())
+        kmeans = KMeans(n_clusters=3, random_state=42)
+        clusters = kmeans.fit_predict(scaled_data)
+        cluster_centroids = pd.DataFrame(kmeans.cluster_centers_, columns=numeric_df.columns)
+        cluster_summary = {
+            "cluster_counts": pd.Series(clusters).value_counts().to_dict(),
+            "centroids": cluster_centroids.to_dict(orient="list")
+        }
+        return cluster_summary
+    return "Insufficient data for clustering."
+
+# Generate visualizations
+def generate_visualizations(df, output_dir):
+    charts = []
+    numeric_df = df.select_dtypes(include=["number"])
+
+    # Correlation heatmap
+    if numeric_df.shape[1] > 1:
+        plt.figure(figsize=(10, 6))
+        sns.heatmap(numeric_df.corr(), annot=True, cmap="coolwarm")
+        plt.title("Correlation Matrix")
+        plt.savefig(os.path.join(output_dir, "correlation_matrix.png"))
+        charts.append("correlation_matrix.png")
+
+    # Distribution plots
+    for col in numeric_df.columns:
+        plt.figure(figsize=(8, 5))
+        sns.histplot(numeric_df[col].dropna(), kde=True)
+        plt.title(f"Distribution of {col}")
+        filename = f"{col}_distribution.png"
+        plt.savefig(os.path.join(output_dir, filename))
+        charts.append(filename)
+
+    # Missing values heatmap
+    if df.isnull().sum().any():
+        plt.figure(figsize=(10, 6))
+        sns.heatmap(df.isnull(), cbar=False, cmap="viridis")
+        plt.title("Missing Values Heatmap")
+        filename = "missing_values_heatmap.png"
+        plt.savefig(os.path.join(output_dir, filename))
+        charts.append(filename)
+
+    return charts
+
+# Send data to LLM
+def send_to_llm(messages):
+    headers = {
+        "Authorization": f"Bearer {API_TOKEN}",
+        "Content-Type": "application/json",
+    }
+    try:
+        response = httpx.post(
+            API_URL,
+            json=messages,
+            headers=headers,
+            timeout=30.0
+        )
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
+    except httpx.ReadTimeout:
+        print("Error: The request to the AI Proxy timed out. Try again later.")
+        sys.exit(1)
+
+# Narrate story based on analysis
+def narrate_story(analysis, charts, output_dir):
+    prompt = f"""
+    Create a README.md narrating this analysis:
+    Data Summary: {analysis['summary']}
+    Missing Values: {analysis['missing_values']}
+    Correlation Matrix: {analysis['correlation']}
+    Outlier Detection: {analysis['outliers']}
+    Clustering Analysis: {analysis['clusters']}
+    Attach these charts: {charts}.
+
+    Key prompts to use:
+    - Identify anomalies or surprising patterns from the analysis.
+    - Suggest potential business decisions or insights based on clustering.
+    - Explain why certain correlations are strong or weak.
+    - Hypothesize causes for missing values and how to handle them.
+    - Provide recommendations for future analysis or data collection.
+
+    Additional Prompts:
+    - What are the key trends or patterns in the dataset?
+    - Summarize the structure and content of this dataset.
+    - Suggest methods to handle missing data in this dataset.
+    - Identify potential causes of detected outliers.
+    - Describe the characteristics of identified clusters and their potential business implications.
+    - Evaluate the overall quality of this dataset.
+    - What additional data would improve the insights drawn from this dataset?
+    - Draft a summary of findings and their implications for decision-making.
+    """
+    messages = {
+        "model": "gpt-4o-mini",
+        "messages": [
+            {"role": "system", "content": "You are a Markdown writer."},
+            {"role": "user", "content": prompt}
+        ],
+    }
+    story = send_to_llm(messages)
+    with open(os.path.join(output_dir, "README.md"), "w") as file:
+        file.write(story)
+
+# Main function
+def main():
+    if len(sys.argv) != 2:
+        print("Usage: python autolysis.py <dataset.csv>")
+        sys.exit(1)
+
+    dataset_path = sys.argv[1]
+    output_dir = os.path.splitext(os.path.basename(dataset_path))[0]
 
     # Ensure output directory exists
     os.makedirs(output_dir, exist_ok=True)
 
-    # Perform generic analysis
-    print("Performing generic analysis...")
-    print(data.info())
-    print("\nSummary statistics:")
-    print(data.describe())
-
-    # Count missing values
-    missing_values = data.isnull().sum()
-    print("\nMissing values per column:")
-    print(missing_values)
-
-    # Filter out non-numeric columns for advanced analysis
-    numeric_data = data.select_dtypes(include=['float64', 'int64'])
-
-    # Handle missing values in numeric data (drop rows with NaN values)
-    numeric_data_cleaned = numeric_data.dropna()
-
-    # Calculate and visualize correlation matrix
     try:
-        correlation_matrix = numeric_data_cleaned.corr()
-        print("\nCorrelation Matrix:")
-        print(correlation_matrix)
-
-        plt.figure(figsize=(5, 5))
-        sns.heatmap(correlation_matrix, annot=True, cmap="coolwarm")
-        heatmap_path = os.path.join(output_dir, "correlation_heatmap.png")
-        plt.savefig(heatmap_path)
-        print(f"Correlation heatmap saved as {heatmap_path}")
+        df = read_csv_file(dataset_path)
+        analysis = analyze_data(df)
+        charts = generate_visualizations(df, output_dir)
+        narrate_story(analysis, charts, output_dir)
+        print(f"Analysis complete. See the '{output_dir}' directory for results.")
     except Exception as e:
-        print(f"Error calculating correlation matrix: {e}")
-
-    # Detect outliers using IQR method
-    try:
-        Q1 = numeric_data_cleaned.quantile(0.25)
-        Q3 = numeric_data_cleaned.quantile(0.75)
-        IQR = Q3 - Q1
-        outliers = ((numeric_data_cleaned < (Q1 - 1.5 * IQR)) | (numeric_data_cleaned > (Q3 + 1.5 * IQR))).sum()
-        print("\nOutliers per column:")
-        print(outliers)
-    except Exception as e:
-        print(f"Error detecting outliers: {e}")
-
-    # Perform clustering analysis
-    clustered_data_path = None  # Initialize variable outside try-except block
-    try:
-        # Scaling the numeric data for clustering
-        scaler = StandardScaler()
-        scaled_data = scaler.fit_transform(numeric_data_cleaned)
-
-        # KMeans clustering with optimal cluster selection
-        inertias = []
-        silhouettes = []
-        optimal_k = 3  # Default cluster count
-        for k in range(2, 10):
-            kmeans = KMeans(n_clusters=k, random_state=42)
-            cluster_labels = kmeans.fit_predict(scaled_data)
-            inertias.append(kmeans.inertia_)
-            silhouettes.append(silhouette_score(scaled_data, cluster_labels))
-
-        # Determine the optimal number of clusters using the silhouette score
-        optimal_k = silhouettes.index(max(silhouettes)) + 2
-
-        # Perform KMeans clustering with the optimal number of clusters
-        kmeans = KMeans(n_clusters=optimal_k, random_state=42)
-        clusters = kmeans.fit_predict(scaled_data)
-
-        # Add the cluster labels to the original dataset
-        data['Cluster'] = pd.Series(clusters, index=numeric_data_cleaned.index)
-        print("\nClustering Analysis (KMeans):")
-        print(data['Cluster'].value_counts())
-
-        # Save clustering results
-        clustered_data_path = os.path.join(output_dir, "clustered_data.csv")
-        data.to_csv(clustered_data_path, index=False)
-        print(f"Clustered data saved as {clustered_data_path}")
-    except Exception as e:
-        print(f"Error performing clustering analysis: {e}")
-
-    # Generate insights using GPT-4o-Mini
-    print("Generating insights using LLM...")
-    context = f"Column names: {list(data.columns)}\nSummary: {data.describe()}\nMissing Values: {missing_values}"
-    insights = generate_readme(data, context, output_dir)
-
-    # Save the insights and visualization to README.md
-    try:
-        readme_path = os.path.join(output_dir, "README.md")
-        with open(readme_path, "w") as file:
-            file.write("# Dataset Analysis Report\n\n")
-            file.write("## Insights from LLM\n\n")
-            file.write(insights)
-            file.write("\n\n## Correlation Heatmap\n")
-            file.write(f"![Correlation Heatmap]({heatmap_path})")
-            file.write("\n\n## KMeans Clustering\n")
-            if clustered_data_path:  # Only write this part if clustering was successful
-                file.write(f"Clustered data saved as [clustered_data.csv]({clustered_data_path})")
-            else:
-                file.write("Clustering analysis failed.")
-        print(f"Report saved as {readme_path}")
-    except Exception as e:
-        print(f"Error saving report: {e}")
-
-
-def generate_readme(data, context, output_dir):
-    """
-    Generate README.md content using GPT-4o-Mini via AI Proxy.
-    """
-    prompt = f"""
-    You are an expert data analyst. Analyze the following dataset and its visualizations, then write a detailed README.md file:
-
-    ### Dataset Description
-    {data.info()}
-
-    ### Summary Statistics
-    {data.describe()}
-
-    ### Missing Values
-    {context}
-
-    ### Visualizations
-    - Correlation heatmap (saved as correlation_heatmap.png in {output_dir}).
-    - KMeans Clustering (clustered data saved as [clustered_data.csv]({output_dir}/clustered_data.csv)).
-
-    Write the README.md in Markdown format. Include headers, clear descriptions, analysis steps, key findings, and links to visualizations.
-    """
-
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are an expert data analyst."},
-                {"role": "user", "content": prompt}
-            ]
-        )
-        return response['choices'][0]['message']['content']
-    except Exception as e:
-        print(f"Error generating README.md: {e}")
-        return "Failed to generate README.md content."
-
+        print(f"An error occurred: {e}")
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python autolysis.py <dataset.csv>")
-        sys.exit(1)
-
-    csv_file = sys.argv[1]
-    output_directory = "."  # Default to the current working directory
-    analyze_csv(csv_file, output_directory)
+    main()
