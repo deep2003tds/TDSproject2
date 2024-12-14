@@ -23,7 +23,7 @@ from sklearn.impute import SimpleImputer
 from dotenv import load_dotenv
 
 # Constants
-API_URL = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
+API_URL = "https://aiproxy.sanand.workers.dev/openai/"
 
 # Load .env file
 load_dotenv()
