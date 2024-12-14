@@ -6,7 +6,6 @@
 #   "seaborn",
 #   "matplotlib",
 #   "scikit-learn",
-#   "python-dotenv"
 # ]
 # ///
 
@@ -20,19 +19,10 @@ from sklearn.ensemble import IsolationForest
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
-from dotenv import load_dotenv
 
 # Constants
 API_URL = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
-
-# Load .env file
-load_dotenv()
-API_TOKEN = os.environ.get("AIPROXY_TOKEN")
-
-if not API_TOKEN:
-    print("Error: API token is not set in the environment variables. Check your .env file.")
-    sys.exit(1)
-
+API_TOKEN = os.environ.get("AIPROXY_TOKEN")  # Use environment variable for the token
 
 # Function to read CSV files
 def read_csv_file(filename):
@@ -41,7 +31,6 @@ def read_csv_file(filename):
     except UnicodeDecodeError:
         print("Warning: UTF-8 encoding failed. Trying ISO-8859-1 (Latin-1).")
         return pd.read_csv(filename, encoding="ISO-8859-1")
-
 
 # Perform data analysis
 def analyze_data(df):
@@ -66,7 +55,6 @@ def analyze_data(df):
     }
     return analysis
 
-
 # Detect outliers using Isolation Forest
 def detect_outliers(df):
     numeric_df = df.select_dtypes(include=["number"])
@@ -75,7 +63,6 @@ def detect_outliers(df):
     clf = IsolationForest(contamination=0.05, random_state=42)
     outliers = clf.fit_predict(numeric_df)
     return pd.Series(outliers).value_counts().to_dict()
-
 
 # Perform clustering analysis
 def cluster_analysis(df):
@@ -92,7 +79,6 @@ def cluster_analysis(df):
         }
         return cluster_summary
     return "Insufficient data for clustering."
-
 
 # Generate a single visualization
 def generate_visualization(df, output_dir):
@@ -117,7 +103,6 @@ def generate_visualization(df, output_dir):
 
     return None
 
-
 # Send data to LLM
 def send_to_llm(messages):
     headers = {
@@ -136,10 +121,6 @@ def send_to_llm(messages):
     except httpx.ReadTimeout:
         print("Error: The request to the AI Proxy timed out. Try again later.")
         sys.exit(1)
-    except httpx.HTTPStatusError as e:
-        print(f"HTTP error: {e.response.status_code} - {e.response.text}")
-        sys.exit(1)
-
 
 # Narrate story based on analysis
 def narrate_story(analysis, chart, output_dir):
@@ -158,6 +139,16 @@ def narrate_story(analysis, chart, output_dir):
     - Explain why certain correlations are strong or weak.
     - Hypothesize causes for missing values and how to handle them.
     - Provide recommendations for future analysis or data collection.
+
+    Additional Prompts:
+    - What are the key trends or patterns in the dataset?
+    - Summarize the structure and content of this dataset.
+    - Suggest methods to handle missing data in this dataset.
+    - Identify potential causes of detected outliers.
+    - Describe the characteristics of identified clusters and their potential business implications.
+    - Evaluate the overall quality of this dataset.
+    - What additional data would improve the insights drawn from this dataset?
+    - Draft a summary of findings and their implications for decision-making.
     """
     messages = {
         "model": "gpt-4o-mini",
@@ -169,7 +160,6 @@ def narrate_story(analysis, chart, output_dir):
     story = send_to_llm(messages)
     with open(os.path.join(output_dir, "README.md"), "w") as file:
         file.write(story)
-
 
 # Main function
 def main():
@@ -191,7 +181,6 @@ def main():
         print(f"Analysis complete. See the '{output_dir}' directory for results.")
     except Exception as e:
         print(f"An error occurred: {e}")
-
 
 if __name__ == "__main__":
     main()
